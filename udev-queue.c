@@ -37,8 +37,6 @@
 
 #include "udev-utils.h"
 
-#define	DEVD_SOCK_PATH	"/var/run/devd.pipe"
-
 struct udev_queue {
 	int refcount;
 	struct udev *udev;
@@ -157,21 +155,8 @@ udev_queue_get_fd(struct udev_queue *uq)
 
 	if (uq->fd >= 0)
 		return (uq->fd);
-#if 0
-	const static struct sockaddr_un sa = {
-		.sun_family = AF_UNIX,
-		.sun_path = DEVD_SOCK_PATH,
-	};
 
-	uq->fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (uq->fd >= 0 &&
-	    connect(uq->fd, (struct sockaddr *) &sa, sizeof(sa)) < 0) {
-		close(uq->fd);
-		uq->fd = -1;
-	}
-#else
 	uq->fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
-#endif
 
 	return (uq->fd);
 }

@@ -30,9 +30,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#if defined(__OpenBSD__)
 #include <sys/sysctl.h>
-#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -52,14 +50,6 @@
 #include "udev-utils.h"
 #include "utils.h"
 
-#define	DEVD_SOCK_PATH		"/var/run/devd.seqpacket.pipe"
-#define	DEVD_RECONNECT_INTERVAL	1000	/* reconnect after 1 second */
-
-#define	DEVD_EVENT_ATTACH	'+'
-#define	DEVD_EVENT_DETACH	'-'
-#define	DEVD_EVENT_NOTICE	'!'
-#define	DEVD_EVENT_UNKNOWN	'?'
-
 STAILQ_HEAD(udev_monitor_queue_head, udev_monitor_queue_entry);
 struct udev_monitor_queue_entry {
 	struct udev_device *ud;
@@ -74,18 +64,14 @@ struct udev_monitor {
 	struct udev_monitor_queue_head queue;
 	pthread_mutex_t mtx;
 	pthread_t thread;
-#if defined(__OpenBSD__)
 	struct udev_list cur_dev_list;
 	struct udev_list prev_dev_list;
 	int cur_serial;
 	int prev_serial;
-#endif
 };
 
-#if defined(__OpenBSD__)
 int mib[] = { CTL_KERN, KERN_AUTOCONF_SERIAL };
 extern pthread_mutex_t scan_mtx;
-#endif
 
 LIBUDEV_EXPORT struct udev_device *
 udev_monitor_receive_device(struct udev_monitor *um)
@@ -143,66 +129,6 @@ udev_monitor_send_device(struct udev_monitor *um, const char *syspath,
 	return (0);
 }
 
-#if !defined(__OpenBSD__)
-static int
-parse_devd_message(char *msg, char *syspath, size_t syspathlen)
-{
-	char devpath[DEV_PATH_MAX] = DEV_PATH_ROOT "/";
-	const char *type, *dev_name;
-	size_t type_len, dev_len, root_len;
-	int action;
-
-	root_len = strlen(devpath);
-	action = UD_ACTION_NONE;
-
-	switch (msg[0]) {
-#ifdef HAVE_DEVINFO_H
-	case DEVD_EVENT_ATTACH:
-		action = UD_ACTION_ADD;
-		/* FALLTHROUGH */
-	case DEVD_EVENT_DETACH:
-		if (action == UD_ACTION_NONE)
-			action = UD_ACTION_REMOVE;
-		*(strchrnul(msg + 1, ' ')) = '\0';
-		strlcpy(syspath, msg + 1, syspathlen);
-		break;
-#endif /* HAVE_DEVINFO_H */
-	case DEVD_EVENT_NOTICE:
-		if (!(match_kern_prop_value(msg + 1, "system", "DEVFS")
-			&& match_kern_prop_value(msg + 1, "subsystem", "CDEV"))
-			&& !match_kern_prop_value(msg + 1, "system", "DRM"))
-			break;
-		type = get_kern_prop_value(msg + 1, "type", &type_len);
-		dev_name = get_kern_prop_value(msg + 1, "cdev", &dev_len);
-		if (type == NULL ||
-		    dev_name == NULL ||
-		    dev_len > (sizeof(devpath) - root_len - 1))
-			break;
-		if (type_len == 6 &&
-		    strncmp(type, "CREATE", type_len) == 0)
-			action = UD_ACTION_ADD;
-		else if (type_len == 7 &&
-		    strncmp(type, "DESTROY", type_len) == 0)
-			action = UD_ACTION_REMOVE;
-		else if (type_len == 7 &&
-		    strncmp(type, "HOTPLUG", type_len) == 0)
-			action = UD_ACTION_HOTPLUG;
-		else
-			break;
-		memcpy(devpath + root_len, dev_name, dev_len);
-		devpath[dev_len + root_len] = 0;
-		strlcpy(syspath, get_syspath_by_devpath(devpath), syspathlen);
-		break;
-	case DEVD_EVENT_UNKNOWN:
-	default:
-		break;
-	}
-
-	return (action);
-}
-#endif
-
-#if defined(__OpenBSD__)
 static int
 obsd_enumerate_cb(const char *path, mode_t type, void *arg)
 {
@@ -228,9 +154,7 @@ obsd_enumerate_cb(const char *path, mode_t type, void *arg)
 
 	return (0);
 }
-#endif
 
-#if defined(__OpenBSD__)
 static void *
 udev_monitor_thread(void *args)
 {
@@ -308,87 +232,6 @@ udev_monitor_thread(void *args)
 
 	return (NULL);
 }
-#else
-static void *
-udev_monitor_thread(void *args)
-{
-	struct udev_monitor *um = args;
-	char ev[1024], syspath[DEV_PATH_MAX];
-	struct pollfd fds[2];
-	nfds_t nfds;
-	ssize_t len;
-	int devd_fd = -1, ret, action, timeout;
-	sigset_t set;
-	const static struct sockaddr_un sa = {
-		.sun_family = AF_UNIX,
-		.sun_path = DEVD_SOCK_PATH,
-	};
-
-	sigfillset(&set);
-	pthread_sigmask(SIG_BLOCK, &set, NULL);
-
-	fds[0].fd = um->fds[1];
-	fds[0].events = 0;
-	fds[1].events = POLLIN;
-
-	for (;;) {
-		if (devd_fd < 0 &&
-		    (devd_fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0)) >= 0 &&
-		    connect(devd_fd, (struct sockaddr *) &sa, sizeof(sa)) < 0) {
-			close(devd_fd);
-			devd_fd = -1;
-		}
-
-		if (devd_fd < 0) {
-			nfds = 1;
-			timeout = DEVD_RECONNECT_INTERVAL;
-		} else {
-			fds[1].fd = devd_fd;
-			nfds = 2;
-			timeout = -1;
-		}
-
-		ret = poll(fds, nfds, timeout);
-		if (ret == -1 && errno == EINTR)
-			continue;
-		if (ret == -1)
-			break;
-
-		/* edev_monitor is finishing */
-		if (fds[0].revents & POLLHUP)
-			break;
-
-		/* connection respawn timer expired */
-		if (ret == 0 || devd_fd < 1)
-			continue;
-
-		if (fds[1].revents & POLLIN) {
-			if ((len = recv(devd_fd, ev, sizeof(ev), MSG_WAITALL))
-			    <= 0) {
-				close(devd_fd);
-				devd_fd = -1;
-				continue;
-			}
-			/* Replace terminating LF with 0 to make C-string */
-			ev[len - 1] = '\0';
-			action = parse_devd_message(ev, syspath, sizeof(syspath));
-			if (action != UD_ACTION_NONE &&
-			    udev_filter_match(um->udev, &um->filters, syspath))
-				udev_monitor_send_device(um, syspath, action);
-		}
-
-		if (fds[1].revents & POLLHUP) {
-			close(devd_fd);
-			devd_fd = -1;
-		}
-	}
-
-	if (devd_fd >= 0)
-		close(devd_fd);
-
-	return (NULL);
-}
-#endif
 
 LIBUDEV_EXPORT struct udev_monitor *
 udev_monitor_new_from_netlink(struct udev *udev, const char *name)
