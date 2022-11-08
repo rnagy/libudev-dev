@@ -1,4 +1,4 @@
-project('libudev-devd', 'c',
+project('libudev-dev', 'c',
 	version : '0.5.0',
 	license : 'BSD2CLAUSE',
 	default_options : [
@@ -8,7 +8,7 @@ project('libudev-devd', 'c',
 		'werror=true' ],
 	meson_version : '>=0.50.0')
 
-libudevdevd_version = meson.project_version().split('.')
+libudevdev_version = meson.project_version().split('.')
 
 dir_data        = join_paths(get_option('prefix'), get_option('datadir'))
 dir_sysconf     = join_paths(get_option('prefix'), get_option('sysconfdir'))
@@ -81,14 +81,14 @@ if cc.has_function('sysctlbyname')
 	config_h.set('HAVE_SYSCTLBYNAME', '1')
 endif
 
-libudevdevd_so_version = '0.0.0'
+libudevdev_so_version = '0.0.0'
 # Dependencies
 thread_dep = dependency('threads')
 
 pkgconfig = import('pkgconfig')
 
 install_headers('libudev.h')
-src_libudevdevd = [ 'udev.c',
+src_libudevdev = [ 'udev.c',
 	'udev-device.c',
 	'udev-device.h',
 	'udev-enumerate.c',
@@ -107,27 +107,27 @@ src_libudevdevd = [ 'udev.c',
 
 if get_option('enable-gpl')
 	config_h.set('ENABLE_GPL', '1')
-	src_libudevdevd += [ 'utils-gpl.c',  'utils-gpl.h' ]
+	src_libudevdev += [ 'utils-gpl.c',  'utils-gpl.h' ]
 endif
 
 
-deps_libudevdevd = [
+deps_libudevdev = [
 	thread_dep,
 	devinfo_dep,
 	procstat_dep
 ]
 
-lib_libudevdevd = shared_library('udev',
-	src_libudevdevd,
+lib_libudevdev = shared_library('udev',
+	src_libudevdev,
 	include_directories : config_h_inc,
-	dependencies : deps_libudevdevd,
-	version : libudevdevd_so_version,
+	dependencies : deps_libudevdev,
+	version : libudevdev_so_version,
 	install : true
 )
 
-pkgconfig.generate(lib_libudevdevd,
+pkgconfig.generate(lib_libudevdev,
 	name : 'libudev',
-	url : 'https://github.com/wulf7/libudev-devd',
+	url : 'https://github.com/rnagy86/libudev-dev',
 	description : 'Library to access udev device information',
 	version : '243', # XXX - should be a proper version
 )
