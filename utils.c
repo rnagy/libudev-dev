@@ -180,8 +180,13 @@ scandir_sub(char *path, int off, int rem, struct scan_ctx *ctx)
 	DIR *dir;
 	struct dirent *ent;
 	int ret = 0;
+	char *rpath;
 
-	dir = opendir(path);
+	rpath = strdup(path);
+	if (rpath == NULL)
+		return (-1);
+
+	dir = opendir(rpath);
 	if (dir == NULL)
 		return (errno == ENOMEM ? -1 : 0);
 
@@ -194,23 +199,23 @@ scandir_sub(char *path, int off, int rem, struct scan_ctx *ctx)
 		if (len > rem)
 			continue;
 
-		strcpy(path + off, ent->d_name);
+		strcpy(rpath + off, ent->d_name);
 		off += len;
 		rem -= len;
 
 		if ((ctx->recursive) && (ent->d_type == DT_DIR)) {
 			if (rem < 1)
 				break;
-			path[off] = '/';
-			path[off+1] = '\0';
+			rpath[off] = '/';
+			rpath[off+1] = '\0';
 			off++;
 			rem--;
 			/* recurse */
-			ret = scandir_sub(path, off, rem, ctx);
+			ret = scandir_sub(rpath, off, rem, ctx);
 			off--;
 			rem++;
 		} else {
-			ret = (ctx->cb)(path, DTTOIF(ent->d_type), ctx->args);
+			ret = (ctx->cb)(rpath, DTTOIF(ent->d_type), ctx->args);
 		}
 		off -= len;
 		rem += len;

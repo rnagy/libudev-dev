@@ -30,6 +30,10 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#if defined(__OpenBSD__)
+#include <sys/sysctl.h>
+#endif
+
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -70,7 +74,18 @@ struct udev_monitor {
 	struct udev_monitor_queue_head queue;
 	pthread_mutex_t mtx;
 	pthread_t thread;
+#if defined(__OpenBSD__)
+	struct udev_list cur_dev_list;
+	struct udev_list prev_dev_list;
+	int cur_serial;
+	int prev_serial;
+#endif
 };
+
+#if defined(__OpenBSD__)
+int mib[] = { CTL_KERN, KERN_AUTOCONF_SERIAL };
+extern pthread_mutex_t scan_mtx;
+#endif
 
 LIBUDEV_EXPORT struct udev_device *
 udev_monitor_receive_device(struct udev_monitor *um)
@@ -128,6 +143,7 @@ udev_monitor_send_device(struct udev_monitor *um, const char *syspath,
 	return (0);
 }
 
+#if !defined(__OpenBSD__)
 static int
 parse_devd_message(char *msg, char *syspath, size_t syspathlen)
 {
@@ -184,7 +200,115 @@ parse_devd_message(char *msg, char *syspath, size_t syspathlen)
 
 	return (action);
 }
+#endif
 
+#if defined(__OpenBSD__)
+static int
+obsd_enumerate_cb(const char *path, mode_t type, void *arg)
+{
+	struct udev_monitor *um = arg;
+	const char *syspath;
+	const struct subsystem_config *sc;
+	int devfd = -1;
+
+	syspath = get_syspath_by_devpath(path);
+	sc = get_subsystem_config_by_syspath(syspath);
+
+	if (sc && (S_ISLNK(type) || S_ISCHR(type)) &&
+            ((devfd = open(syspath, O_RDWR)) != -1)) {
+		if (udev_list_insert(&um->cur_dev_list, syspath, NULL) == -1) {
+			if (devfd != -1)
+				close(devfd);
+			return (-1);
+		}
+	}
+
+	if (devfd != -1)
+		close(devfd);
+
+	return (0);
+}
+#endif
+
+#if defined(__OpenBSD__)
+static void *
+udev_monitor_thread(void *args)
+{
+	struct udev_monitor *um = args;
+	sigset_t set;
+	char path[DEV_PATH_MAX] = DEV_PATH_ROOT "/";
+	struct scan_ctx mctx;
+	int found;
+	struct udev_list_entry *ce, *pe;
+	size_t size = sizeof(&um->cur_serial);
+
+	sigfillset(&set);
+	pthread_sigmask(SIG_BLOCK, &set, NULL);
+
+	mctx = (struct scan_ctx) {
+		.recursive = true,
+		.cb = obsd_enumerate_cb,
+		.args = um,
+	};
+
+	/* scan and fill the initial tree */
+	pthread_mutex_lock(&scan_mtx);
+	if (scandir_recursive(path, sizeof(path), &mctx) == 0) {
+		udev_list_entry_foreach(ce, udev_list_entry_get_first(&um->cur_dev_list)) {
+			if (!_udev_list_entry_get_name(ce))
+				continue;
+			udev_list_insert(&um->prev_dev_list, udev_list_entry_get_name(ce), NULL);
+		}
+	}
+	pthread_mutex_unlock(&scan_mtx);
+
+	for (;;) {
+		(void)sysctl(mib, 2, &um->cur_serial, &size, NULL, 0);
+
+		if (um->cur_serial == um->prev_serial) {
+			usleep(1000);
+			continue;
+		}
+
+		/* reinit the current device list */
+		udev_list_free(&um->cur_dev_list);
+
+		pthread_mutex_lock(&scan_mtx);
+		if (scandir_recursive(path, sizeof(path), &mctx) == -1)
+			printf("failed to scan\n");
+		pthread_mutex_unlock(&scan_mtx);
+
+		/* attach */
+		udev_list_entry_foreach(ce, udev_list_entry_get_first(&um->cur_dev_list)) {
+			found = 0;
+			if (!_udev_list_entry_get_name(ce))
+				continue;
+			if (udev_list_member(&um->prev_dev_list, _udev_list_entry_get_name(ce), NULL))
+				found = 1;
+			if (!found && udev_filter_match(um->udev, &um->filters, _udev_list_entry_get_name(ce))) {
+				udev_monitor_send_device(um, _udev_list_entry_get_name(ce), UD_ACTION_ADD);
+				udev_list_insert(&um->prev_dev_list, udev_list_entry_get_name(ce), NULL);
+			}
+		}
+
+		/* detach */
+		udev_list_entry_foreach(pe, udev_list_entry_get_first(&um->prev_dev_list)) {
+			found = 0;
+			if (!_udev_list_entry_get_name(pe))
+				continue;
+			if (udev_list_member(&um->cur_dev_list, _udev_list_entry_get_name(pe), NULL))
+				found = 1;
+			if (!found && udev_filter_match(um->udev, &um->filters, _udev_list_entry_get_name(pe))) {
+				udev_monitor_send_device(um, _udev_list_entry_get_name(pe), UD_ACTION_REMOVE);
+				udev_list_remove(&um->prev_dev_list, udev_list_entry_get_name(pe), NULL);
+			}
+		}
+		um->prev_serial = um->cur_serial;
+	}
+
+	return (NULL);
+}
+#else
 static void *
 udev_monitor_thread(void *args)
 {
@@ -264,11 +388,13 @@ udev_monitor_thread(void *args)
 
 	return (NULL);
 }
+#endif
 
 LIBUDEV_EXPORT struct udev_monitor *
 udev_monitor_new_from_netlink(struct udev *udev, const char *name)
 {
 	struct udev_monitor *um;
+	size_t size;
 	
 	TRC("(%p, %s)", udev, name);
 	um = calloc(1, sizeof(struct udev_monitor));
@@ -286,6 +412,11 @@ udev_monitor_new_from_netlink(struct udev *udev, const char *name)
 	um->refcount = 1;
 	udev_filter_init(&um->filters);
 	STAILQ_INIT(&um->queue);
+	udev_list_init(&um->cur_dev_list);
+	udev_list_init(&um->prev_dev_list);
+	size = sizeof(&um->cur_serial);
+	(void)sysctl(mib, 2, &um->cur_serial, &size, NULL, 0);
+	um->prev_serial = um->cur_serial;
 	pthread_mutex_init(&um->mtx, NULL);
 
 	return (um);
@@ -360,6 +491,8 @@ udev_monitor_unref(struct udev_monitor *um)
 		pthread_join(um->thread, NULL);
 		close(um->fds[1]);
 		udev_filter_free(&um->filters);
+		udev_list_free(&um->cur_dev_list);
+		udev_list_free(&um->prev_dev_list);
 		udev_monitor_queue_drop(&um->queue);
 		pthread_mutex_destroy(&um->mtx);
 		_udev_unref(um->udev);

@@ -34,6 +34,12 @@
 #include <string.h>
 #include <unistd.h>
 
+#if defined(__OpenBSD__)
+#include <fcntl.h>
+#include <pthread.h>
+pthread_mutex_t scan_mtx = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 #include "libudev.h"
 #include "udev-filter.h"
 #include "udev-list.h"
@@ -180,14 +186,25 @@ enumerate_cb(const char *path, mode_t type, void *arg)
 {
 	struct udev_enumerate *ue = arg;
 	const char *syspath;
+	int ret = 0;
+#if defined(__OpenBSD__)
+	int devfd = -1;
+#endif
 
 	if (S_ISLNK(type) || S_ISCHR(type)) {
 		syspath = get_syspath_by_devpath(path);
 		if (udev_filter_match(ue->udev, &ue->filters, syspath) &&
+#if defined(__OpenBSD__)
+		    ((devfd = open(syspath, O_RDWR)) != -1) &&
+#endif
 		    udev_list_insert(&ue->dev_list, syspath, NULL) == -1)
-			return (-1);
+			ret = -1;
 	}
-	return (0);
+#if defined(__OpenBSD__)
+	if (devfd != -1)
+		close(devfd);
+#endif
+	return (ret);
 }
 
 LIBUDEV_EXPORT int
@@ -198,6 +215,8 @@ udev_enumerate_scan_devices(struct udev_enumerate *ue)
 	int ret;
 
 	TRC("(%p)", ue);
+
+	pthread_mutex_lock(&scan_mtx);
 
 	udev_list_free(&ue->dev_list);
 	ctx = (struct scan_ctx) {
@@ -213,6 +232,9 @@ udev_enumerate_scan_devices(struct udev_enumerate *ue)
 #endif
 	if (ret == -1)
 		udev_list_free(&ue->dev_list);
+
+	pthread_mutex_unlock(&scan_mtx);
+
 	return ret;
 }
 
