@@ -161,6 +161,7 @@ udev_monitor_thread(void *args)
 	struct udev_monitor *um = args;
 	sigset_t set;
 	char path[DEV_PATH_MAX] = DEV_PATH_ROOT "/";
+	char path_fido[DEV_PATH_MAX] = DEV_PATH_ROOT "/fido/";
 	struct scan_ctx mctx;
 	int found;
 	struct udev_list_entry *ce, *pe;
@@ -177,7 +178,8 @@ udev_monitor_thread(void *args)
 
 	/* scan and fill the initial tree */
 	pthread_mutex_lock(&scan_mtx);
-	if (scandir_recursive(path, sizeof(path), &mctx) == 0) {
+	if ((scandir_recursive(path, sizeof(path), &mctx) == 0) &&
+	    (scandir_recursive(path_fido, sizeof(path_fido), &mctx) == 0)) {
 		udev_list_entry_foreach(ce, udev_list_entry_get_first(&um->cur_dev_list)) {
 			if (!_udev_list_entry_get_name(ce))
 				continue;
@@ -198,7 +200,8 @@ udev_monitor_thread(void *args)
 		udev_list_free(&um->cur_dev_list);
 
 		pthread_mutex_lock(&scan_mtx);
-		if (scandir_recursive(path, sizeof(path), &mctx) == -1)
+		if ((scandir_recursive(path, sizeof(path), &mctx) == -1) ||
+	            (scandir_recursive(path_fido, sizeof(path_fido), &mctx) == -1))
 			printf("failed to scan\n");
 		pthread_mutex_unlock(&scan_mtx);
 

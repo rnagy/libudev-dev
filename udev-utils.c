@@ -209,13 +209,11 @@ static const struct subsystem_config subsystems[] = {
 		.create_handler = create_hidraw_handler,
 	},
 #endif
-#if defined(__OpenBSD__)
 	{
 		.subsystem = "fido",
 		.syspath = DEV_PATH_ROOT "/fido/[0-9]*",
 		.create_handler = create_keyboard_handler,
 	},
-#endif
 };
 
 const struct subsystem_config *

@@ -34,11 +34,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#if defined(__OpenBSD__)
 #include <fcntl.h>
 #include <pthread.h>
 pthread_mutex_t scan_mtx = PTHREAD_MUTEX_INITIALIZER;
-#endif
 
 #include "libudev.h"
 #include "udev-filter.h"
@@ -187,23 +185,19 @@ enumerate_cb(const char *path, mode_t type, void *arg)
 	struct udev_enumerate *ue = arg;
 	const char *syspath;
 	int ret = 0;
-#if defined(__OpenBSD__)
 	int devfd = -1;
-#endif
 
 	if (S_ISLNK(type) || S_ISCHR(type)) {
 		syspath = get_syspath_by_devpath(path);
 		if (udev_filter_match(ue->udev, &ue->filters, syspath) &&
-#if defined(__OpenBSD__)
 		    ((devfd = open(syspath, O_RDWR)) != -1) &&
-#endif
 		    udev_list_insert(&ue->dev_list, syspath, NULL) == -1)
 			ret = -1;
 	}
-#if defined(__OpenBSD__)
+
 	if (devfd != -1)
 		close(devfd);
-#endif
+
 	return (ret);
 }
 
@@ -212,6 +206,7 @@ udev_enumerate_scan_devices(struct udev_enumerate *ue)
 {
 	struct scan_ctx ctx;
 	char path[DEV_PATH_MAX] = DEV_PATH_ROOT "/";
+	char path_fido[DEV_PATH_MAX] = DEV_PATH_ROOT "/fido/";
 	int ret;
 
 	TRC("(%p)", ue);
@@ -226,6 +221,9 @@ udev_enumerate_scan_devices(struct udev_enumerate *ue)
 	};
 
 	ret = scandir_recursive(path, sizeof(path), &ctx);
+	if (ret == 0)
+		ret = scandir_recursive(path_fido, sizeof(path_fido), &ctx);
+
 #ifdef HAVE_DEVINFO_H
 	if (ret == 0)
 		ret = scandev_recursive(&ctx);
