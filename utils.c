@@ -180,13 +180,8 @@ scandir_sub(char *path, int off, int rem, struct scan_ctx *ctx)
 	DIR *dir;
 	struct dirent *ent;
 	int ret = 0;
-	char *rpath;
 
-	rpath = strdup(path);
-	if (rpath == NULL)
-		return (-1);
-
-	dir = opendir(rpath);
+	dir = opendir(path);
 	if (dir == NULL)
 		return (errno == ENOMEM ? -1 : 0);
 
@@ -199,23 +194,23 @@ scandir_sub(char *path, int off, int rem, struct scan_ctx *ctx)
 		if (len > rem)
 			continue;
 
-		strcpy(rpath + off, ent->d_name);
+		strcpy(path + off, ent->d_name);
 		off += len;
 		rem -= len;
 
 		if ((ctx->recursive) && (ent->d_type == DT_DIR)) {
 			if (rem < 1)
 				break;
-			rpath[off] = '/';
-			rpath[off+1] = '\0';
+			path[off] = '/';
+			path[off+1] = '\0';
 			off++;
 			rem--;
 			/* recurse */
-			ret = scandir_sub(rpath, off, rem, ctx);
+			ret = scandir_sub(path, off, rem, ctx);
 			off--;
 			rem++;
 		} else {
-			ret = (ctx->cb)(rpath, DTTOIF(ent->d_type), ctx->args);
+			ret = (ctx->cb)(path, DTTOIF(ent->d_type), ctx->args);
 		}
 		off -= len;
 		rem += len;
@@ -227,9 +222,11 @@ scandir_sub(char *path, int off, int rem, struct scan_ctx *ctx)
 int
 scandir_recursive(char *path, size_t len, struct scan_ctx *ctx)
 {
+	char rpath[PATH_MAX];
 	size_t root_len = strlen(path);
 
-	return (scandir_sub(path, root_len, len - root_len - 1, ctx));
+	strlcpy(rpath, path, sizeof(rpath));
+	return (scandir_sub(rpath, root_len, len - root_len - 1, ctx));
 }
 
 #ifdef HAVE_DEVINFO_H
